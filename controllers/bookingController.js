@@ -22,7 +22,6 @@ export async function createBooking(req, res, next) {
     const event = await Event.findById(eventId);
     if (!event) return res.status(404).json({ message: 'Event not found' });
 
-    // prevent booking for non-upcoming events
     const status = computeStatus(event.startDate);
     if (status !== 'Upcoming')
       return res.status(400).json({ message: 'Event is not open for booking' });
@@ -45,6 +44,10 @@ export async function createBooking(req, res, next) {
     });
 
     const userSeats = userBookings.reduce((s, b) => s + b.seats, 0);
+
+    if (userSeats + seats > 2)
+      return res.status(400).json({ message: 'Per-user seat limit exceeded' });
+
     // create booking
     const booking = await Booking.create({
       event: event._id,
@@ -53,7 +56,7 @@ export async function createBooking(req, res, next) {
       confirmationCode: genConfirmation()
     });
 
-    // logs
+    // log
     await BookingLog.create({
       user: userId,
       event: event._id,
@@ -61,40 +64,48 @@ export async function createBooking(req, res, next) {
       message: `Booked ${seats} seats`
     });
 
-    // ✓ PDF ticket + email
-    const user = await User.findById(userId);
-    const pdfBuffer = await generateTicketPDF({ user, event, booking });
-
-    await sendEmail({
-      to: user.email,
-      subject: "Your Booking Confirmation - Eventease",
-      text: "Your booking is confirmed. Ticket attached.",
-      html: `
-        <h2>Booking Confirmed 🎉</h2>
-        <p>Event: <strong>${event.title}</strong></p>
-        <p>Seats: <strong>${booking.seats}</strong></p>
-        <p>Confirmation Code: <strong>${booking.confirmationCode}</strong></p>
-      `,
-      attachments: [
-        {
-          filename: `Ticket-${booking.confirmationCode}.pdf`,
-          content: pdfBuffer,
-          contentType: "application/pdf"
-        }
-      ]
-    });
-
+    // 1️⃣ Respond immediately (critical fix)
     res.status(201).json({
+      success: true,
+      message: "Booking successful! Ticket will arrive on your email.",
       booking: {
         id: booking._id,
         event: event._id,
         seats: booking.seats,
-        status: booking.status,
         confirmationCode: booking.confirmationCode,
         createdAt: booking.createdAt
-      },
-      message: "Booking successful! Ticket mailed."
+      }
     });
+
+    // 2️⃣ Background task (non-blocking)
+    setTimeout(async () => {
+      try {
+        const user = await User.findById(userId);
+        const pdfBuffer = await generateTicketPDF({ user, event, booking });
+
+        await sendEmail({
+          to: user.email,
+          subject: "Your Booking Confirmation - Eventease",
+          text: "Your booking is confirmed. Ticket attached.",
+          html: `
+            <h2>Booking Confirmed 🎉</h2>
+            <p>Event: <strong>${event.title}</strong></p>
+            <p>Seats: <strong>${booking.seats}</strong></p>
+            <p>Confirmation Code: <strong>${booking.confirmationCode}</strong></p>
+          `,
+          attachments: [
+            {
+              filename: `Ticket-${booking.confirmationCode}.pdf`,
+              content: pdfBuffer,
+              contentType: "application/pdf"
+            }
+          ]
+        });
+
+      } catch (error) {
+        console.error("Background email/PDF error:", error);
+      }
+    }, 0); // run after event loop
 
   } catch (err) {
     next(err);
