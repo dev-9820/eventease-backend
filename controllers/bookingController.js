@@ -45,9 +45,6 @@ export async function createBooking(req, res, next) {
     });
 
     const userSeats = userBookings.reduce((s, b) => s + b.seats, 0);
-    if (userSeats + seats > 2)
-      return res.status(400).json({ message: 'Per-user seat limit exceeded' });
-
     // create booking
     const booking = await Booking.create({
       event: event._id,
